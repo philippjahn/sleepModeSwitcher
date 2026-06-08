@@ -1,99 +1,97 @@
 # SleepModeSwitcher
 
-Ein winziges macOS-Menüleisten-Tool, das den Sleep-Modus per Klick umschaltet,
-damit lokale Berechnungen **auch bei geschlossenem Deckel** weiterlaufen.
+A tiny macOS menu bar app that toggles the system sleep mode with one click,
+so local work can continue **with the lid closed**.
 
-| Zustand | Icon | Bedeutung |
-|--------|:----:|-----------|
-| Sleep **erlaubt** (normal) | 🌙 `moon.fill` | Mac schläft wie gewohnt |
-| Sleep **deaktiviert** | ⚡ `bolt.fill` | Mac bleibt wach, Berechnungen laufen weiter |
+| State | Icon | Meaning |
+|-------|:----:|---------|
+| Sleep **allowed** (normal) | 🌙 `moon.fill` | Mac sleeps normally |
+| Sleep **disabled** | ⚡ `bolt.fill` | Mac stays awake, tasks keep running |
 
-- **Linksklick** auf das Icon → schaltet sofort um (ohne Passwort-Abfrage).
-- **Rechtsklick** → Menü mit Status, Auto-Aus-Einstellungen, Autostart, Beenden.
-- Startet automatisch beim Login.
+- **Left click** on the icon toggles the state immediately (no password prompt).
+- **Right click** opens a menu with status, auto-off settings, login item, and quit.
+- Automatically registers as a login item on first launch.
 
-Technisch setzt das Tool `pmset -a disablesleep 1` / `0` — der einzige Mechanismus,
-der einen Apple-Silicon-Mac bei **geschlossenem Deckel, ohne externen Monitor, im
-Akkubetrieb** wach hält. (`caffeinate` und Power-Assertions reichen dafür **nicht**;
-Apples eigene `caffeinate`-Manpage verweist explizit auf `pmset`.)
+The app uses `pmset -a disablesleep 1` / `0` — the only reliable method to keep
+an Apple Silicon Mac awake with the lid closed, no external display, and on
+battery power. `caffeinate` and power assertions do not override lid close;
+Apple's own `caffeinate` manpage points to `pmset`.
 
-## Voraussetzungen
+## Requirements
 
-- macOS 13+ (entwickelt/getestet auf macOS 26, Apple Silicon)
-- Xcode bzw. die Command Line Tools (für `swift build`)
+- macOS 13+ (built/tested on macOS 14+ with Apple Silicon)
+- Xcode or Command Line Tools (for `swift build`)
 
 ## Installation
 
 ```bash
-# 1) App bauen
+# 1) Build the app
 ./scripts/build-app.sh
 
-# 2) Passwortlosen pmset-Zugriff einrichten (einmalig, fragt einmal nach sudo)
+# 2) Install passwordless pmset access (prompts for sudo once)
 ./scripts/install-sudoers.sh
 
-# 3) Starten
+# 3) Launch
 open ./SleepModeSwitcher.app
 ```
 
-Optional die App nach `/Applications` ziehen — das macht den Autostart per
-Login-Item stabiler. Beim ersten Start registriert sich die App selbst als
-Login-Item; ggf. unter **Systemeinstellungen → Allgemein → Anmeldeobjekte**
-bestätigen.
+Optionally move the app to `/Applications` — this makes login item autostart
+more stable. On first launch the app registers itself as a login item; if needed
+review it under **System Settings → General → Login Items**.
 
-### Was `install-sudoers.sh` macht
+### What `install-sudoers.sh` does
 
-Es legt `/etc/sudoers.d/sleepmodeswitcher` an und erlaubt deinem Benutzer,
-**ausschließlich** diese zwei Befehle ohne Passwort auszuführen:
+It creates `/etc/sudoers.d/sleepmodeswitcher` and allows your user to run only
+these two commands without a password:
 
 ```
 /usr/bin/pmset -a disablesleep 0
 /usr/bin/pmset -a disablesleep 1
 ```
 
-Die Syntax wird vorab mit `visudo -c` geprüft, bevor irgendetwas nach
-`/etc/sudoers.d/` geschrieben wird. Nichts anderes wird passwortlos freigegeben.
+The rule is validated with `visudo -c` before it is installed. Nothing else is
+given passwordless sudo access.
 
-## Auto-Aus-Sicherung
+## Auto-off safety
 
-Damit der Akku bei geschlossenem Deckel nicht unbemerkt leerläuft, schaltet sich
-die Sleep-Deaktivierung automatisch wieder aus, sobald eine Schwelle erreicht ist
-(im Rechtsklick-Menü einstellbar, Standard: **20 % Akku** bzw. **4 Stunden**):
+To avoid draining the battery unnoticed while the lid is closed, the app can
+automatically re-enable sleep when a threshold is reached. This is configurable
+in the right-click menu. Default settings are **20% battery** and **4 hours**.
 
-- **Auto-Aus bei Akku** – Aus / 10 % / 20 % / 30 % (greift nur im Akkubetrieb).
-- **Auto-Aus nach Zeit** – Aus / 1 h / 2 h / 4 h / 8 h.
+- **Auto-off on battery** – Off / 10% / 20% / 30% (only applies on battery).
+- **Auto-off after time** – Off / 1 h / 2 h / 4 h / 8 h.
 
-## Gut zu wissen
+## Notes
 
-- **Wärme:** Unter Dauerlast bei komplett geschlossenem Deckel staut sich Hitze;
-  der Mac drosselt dann eventuell die Leistung. Bei langen, schweren Jobs den
-  Deckel leicht aufstellen oder das Throttling in Kauf nehmen.
-- **Akku:** Solange Sleep deaktiviert ist, läuft der Akku weiter herunter — dafür
-  gibt es die Auto-Aus-Sicherung oben.
-- **100 % zukunftssicher:** Falls ein künftiges macOS-Update den reinen
-  `pmset`-Weg einmal zudreht, erzwingt ein billiger HDMI-/USB-C-Dummy-Stecker
-  echten Clamshell-Betrieb (funktioniert auch ohne echten Monitor, im Akkubetrieb).
+- **Heat:** Under sustained load with the lid closed, heat can build up and the
+  Mac may throttle. For long heavy jobs consider leaving the lid slightly open
+  or accepting reduced performance.
+- **Battery:** While sleep is disabled, the battery will continue to discharge.
+  The auto-off safety settings help prevent a full drain.
+- **Future-proofing:** If a future macOS update blocks this `pmset` method, a
+  cheap HDMI/USB-C dummy plug is the more reliable way to keep clamshell mode
+  active without a real external display.
 
-## Deinstallation
+## Uninstallation
 
 ```bash
 ./scripts/uninstall.sh
 ```
 
-Setzt den Sleep-Modus zurück (`disablesleep 0`), entfernt die sudoers-Regel und
-die gebaute App. Den Login-Item-Eintrag ggf. unter **Systemeinstellungen →
-Allgemein → Anmeldeobjekte** entfernen.
+This restores normal sleep mode (`disablesleep 0`), removes the sudoers rule,
+and deletes the built app. Remove any login item entry under **System Settings →
+General → Login Items** if needed.
 
-## Projektstruktur
+## Project structure
 
 ```
 Sources/SleepModeSwitcher/
-  main.swift            App-Bootstrap (Menüleiste ohne Dock-Icon)
-  AppDelegate.swift     Statusicon, Klick-Handling, Menü
-  SleepController.swift pmset setzen + Zustand auslesen
-  SafetyMonitor.swift   Auto-Aus (Akku-Schwelle + Zeitlimit)
-  LoginItem.swift       Autostart via SMAppService
+  main.swift            App bootstrap (menu bar app without Dock icon)
+  AppDelegate.swift     status icon, click handling, menu
+  SleepController.swift pmset control + state reading
+  SafetyMonitor.swift   auto-off safety (battery threshold + timeout)
+  LoginItem.swift       login item registration via SMAppService
 scripts/
-  build-app.sh          Release bauen + .app-Bundle signieren
-  install-sudoers.sh    NOPASSWD-Regel installieren
-  uninstall.sh          alles rückgängig machen
-```
+  build-app.sh          build release binary + assemble .app bundle
+  install-sudoers.sh    install NOPASSWD sudoers rule
+  uninstall.sh          rollback changes and remove app

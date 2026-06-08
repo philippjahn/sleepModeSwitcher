@@ -79,7 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let button = statusItem.button else { return }
         let disabled = SleepController.isSleepDisabled()
         let symbol = disabled ? "bolt.fill" : "moon.fill"
-        let description = disabled ? "Sleep deaktiviert – bleibt wach" : "Sleep erlaubt"
+        let description = disabled ? "Sleep disabled — stays awake" : "Sleep allowed"
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
         image?.isTemplate = true
         button.image = image
@@ -101,40 +101,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let disabled = SleepController.isSleepDisabled()
         let status = NSMenuItem(
-            title: disabled ? "Status: Sleep DEAKTIVIERT (bleibt wach)" : "Status: Sleep erlaubt",
+            title: disabled ? "Status: Sleep DISABLED (stays awake)" : "Status: Sleep allowed",
             action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
         menu.addItem(.separator())
 
         menu.addItem(submenuItem(
-            title: "Auto-Aus bei Akku",
-            options: [("Aus", 0), ("10 %", 10), ("20 %", 20), ("30 %", 30)],
+            title: "Auto-off on battery",
+            options: [("Off", 0), ("10%", 10), ("20%", 20), ("30%", 30)],
             selected: currentBattery,
             action: #selector(setBatteryThreshold(_:))))
 
         menu.addItem(submenuItem(
-            title: "Auto-Aus nach Zeit",
-            options: [("Aus", 0), ("1 h", 1), ("2 h", 2), ("4 h", 4), ("8 h", 8)],
+            title: "Auto-off after time",
+            options: [("Off", 0), ("1 h", 1), ("2 h", 2), ("4 h", 4), ("8 h", 8)],
             selected: currentHours,
             action: #selector(setTimeLimit(_:))))
 
         menu.addItem(.separator())
 
-        let login = NSMenuItem(title: "Beim Login starten",
+        let login = NSMenuItem(title: "Launch at login",
                                action: #selector(toggleLoginItem), keyEquivalent: "")
         login.target = self
         login.state = LoginItem.isEnabled ? .on : .off
         menu.addItem(login)
 
-        let help = NSMenuItem(title: "Setup-Hilfe …",
+        let help = NSMenuItem(title: "Setup help …",
                               action: #selector(showHelp), keyEquivalent: "")
         help.target = self
         menu.addItem(help)
 
         menu.addItem(.separator())
 
-        let quit = NSMenuItem(title: "Beenden", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
 
@@ -198,16 +198,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = isHelp ? .informational : .warning
         alert.messageText = isHelp
-            ? "Setup-Hilfe"
-            : "Sleep-Modus konnte nicht umgeschaltet werden"
+            ? "Setup help"
+            : "Could not toggle sleep mode"
         alert.informativeText = """
-        Damit der Sleep-Modus ohne Passwort-Abfrage umgeschaltet werden kann, \
-        muss einmalig ein sudoers-Eintrag installiert werden.
+        To toggle sleep mode without a password prompt, you must install a
+        sudoers entry once.
 
-        Im Terminal im Projektordner ausführen:
+        Run in Terminal from the project folder:
             ./scripts/install-sudoers.sh
 
-        Das erlaubt ausschließlich diese zwei Befehle ohne Passwort:
+        That allows only these two commands without a password:
             /usr/bin/pmset -a disablesleep 0
             /usr/bin/pmset -a disablesleep 1
         """

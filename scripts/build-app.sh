@@ -47,6 +47,6 @@ PLIST
 echo "▸ Code signing (ad-hoc) …"
 codesign --force --deep --sign - "$APP"
 
-echo "✓ Fertig: $APP"
-echo "  Tipp: App nach /Applications ziehen (stabiler Autostart per Login-Item)."
+echo "✓ Done: $APP"
+echo "  Tip: Move the app to /Applications for more stable login-item autostart."
 echo "  Start: open \"$APP\""
