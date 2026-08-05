@@ -44,8 +44,27 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "▸ Code signing (ad-hoc) …"
-codesign --force --deep --sign - "$APP"
+# Signing identity: $SIGN_IDENTITY, else the machine-local .signing-identity
+# file, else ad-hoc.
+#
+# The identity matters beyond Gatekeeper: TCC ties the Accessibility approval to
+# the app's designated requirement. Ad-hoc signing makes that the binary hash,
+# so every rebuild invalidates the approval while still showing a ticked box in
+# System Settings. A certificate makes it the certificate instead, and the
+# approval survives rebuilds. Any self-signed "Code Signing" certificate from
+# Keychain Access → Certificate Assistant does the job; it need not be trusted.
+SIGN_IDENTITY="${SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ] && [ -f "$ROOT/.signing-identity" ]; then
+    SIGN_IDENTITY="$(tr -d '[:space:]' < "$ROOT/.signing-identity")"
+fi
+
+if [ -n "$SIGN_IDENTITY" ]; then
+    echo "▸ Code signing ($SIGN_IDENTITY) …"
+    codesign --force --deep --sign "$SIGN_IDENTITY" "$APP"
+else
+    echo "▸ Code signing (ad-hoc — Accessibility approval will not survive rebuilds) …"
+    codesign --force --deep --sign - "$APP"
+fi
 
 echo "✓ Done: $APP"
 echo "  Tip: Move the app to /Applications for more stable login-item autostart."

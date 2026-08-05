@@ -3,3 +3,6 @@
 .DS_Store
 xcuserdata/
 *.xcodeproj
+
+# machine-local code signing identity (see scripts/build-app.sh)
+.signing-identity

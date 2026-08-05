@@ -16,9 +16,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let kBattery = "batteryThresholdPercent"
     private let kHours = "timeLimitHours"
     private let kDidRegisterLogin = "didRegisterLoginItem"
+    // Key string kept from the first version so an existing setting survives.
+    private let kNetwork = "hotspotSSID"
 
     private var currentBattery: Int { defaults.integer(forKey: kBattery) }
     private var currentHours: Int { defaults.integer(forKey: kHours) }
+
+    /// Default network to switch to; `nil` when unset or blank.
+    private var preferredNetwork: String? {
+        let value = defaults.string(forKey: kNetwork)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
 
     // MARK: - Lifecycle
 
@@ -35,21 +45,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.target = self
             button.action = #selector(statusItemClicked)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            // Hard cap: never let a stale, wrong-scale bitmap overflow the item.
+            button.imageScaling = .scaleProportionallyDown
         }
         refreshIcon()
 
-        // Register as a login item on first launch (autostart is the default).
-        if !defaults.bool(forKey: kDidRegisterLogin) {
-            LoginItem.setEnabled(true)
-            defaults.set(true, forKey: kDidRegisterLogin)
-        }
-
-        // If sleep was already disabled (e.g. set manually before launch),
-            // Hard cap: never let a stale, wrong-scale bitmap overflow the item.
-            button.imageScaling = .scaleProportionallyDown
-        // begin guarding it immediately.
-        if SleepController.isSleepDisabled() {
-            safety.start()
         // Rebuild the icon whenever displays are attached/detached or change
         // scale, discarding any image reps cached for the old configuration.
         NotificationCenter.default.addObserver(
@@ -58,6 +58,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSApplication.didChangeScreenParametersNotification,
             object: nil)
 
+        // Register as a login item on first launch (autostart is the default).
+        if !defaults.bool(forKey: kDidRegisterLogin) {
+            LoginItem.setEnabled(true)
+            defaults.set(true, forKey: kDidRegisterLogin)
+        }
+
+        // Switching means pressing an entry in the Wi-Fi menu — ask for
+        // accessibility access on launch so the grant is in place by the first
+        // toggle instead of failing it.
+        if preferredNetwork != nil, !WiFiMenu.isTrusted {
+            WiFiMenu.requestTrust()
+        }
+
+        // If sleep was already disabled (e.g. set manually before launch),
+        // begin guarding it immediately.
+        if SleepController.isSleepDisabled() {
+            safety.start()
         }
     }
 
@@ -79,6 +96,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if target { safety.start() } else { safety.stop() }
         refreshIcon()
+        // Staying awake is nearly always work away from the desk — offer the
+        // network right after the switch, never when going back to sleep.
+        if target { offerNetworkSwitch() }
     }
 
     private func handleSafetyTrip() {
@@ -87,6 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Icon
+
+    @objc private func screensChanged() {
+        refreshIcon()
+    }
 
     private func refreshIcon() {
         guard let button = statusItem.button else { return }
@@ -130,10 +154,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
     }
-    @objc private func screensChanged() {
-        refreshIcon()
-    }
-
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
@@ -157,6 +177,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             options: [("Off", 0), ("1 h", 1), ("2 h", 2), ("4 h", 4), ("8 h", 8)],
             selected: currentHours,
             action: #selector(setTimeLimit(_:))))
+
+        menu.addItem(.separator())
+
+        let network = NSMenuItem(
+            title: "Network: \(preferredNetwork ?? "not set") …",
+            action: #selector(editNetworkName), keyEquivalent: "")
+        network.target = self
+        menu.addItem(network)
 
         menu.addItem(.separator())
 
@@ -213,6 +241,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LoginItem.setEnabled(!LoginItem.isEnabled)
     }
 
+    @objc private func editNetworkName() {
+        askForNetworkName()
+    }
+
     @objc private func showHelp() {
         showSudoersAlert(isHelp: true)
     }
@@ -229,6 +261,190 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if defaults.object(forKey: kHours) == nil { defaults.set(4, forKey: kHours) }
         safety.batteryThreshold = currentBattery == 0 ? nil : currentBattery
         safety.timeLimitHours = currentHours == 0 ? nil : Double(currentHours)
+    }
+
+    // MARK: - Network switching
+
+    /// Asked on every switch to "sleep disabled": staying awake usually means
+    /// working away from the desk, where the uplink changes too.
+    ///
+    /// Three answers, because the stored network is a default and not a rule:
+    /// join it, pick another one, or stay put.
+    private func offerNetworkSwitch() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Switch network?"
+        let configured = preferredNetwork
+        alert.informativeText = configured.map { "Sleep is now disabled. Join \"\($0)\"?" }
+            ?? "Sleep is now disabled. No network set."
+
+        if configured != nil {
+            alert.addButton(withTitle: "Switch")     // default, triggered by Return
+            alert.addButton(withTitle: "Other …")
+        } else {
+            alert.addButton(withTitle: "Choose …")
+        }
+        alert.addButton(withTitle: "Not now")
+        alert.buttons.last?.keyEquivalent = "\u{1b}" // Escape
+
+        NSApp.activate(ignoringOtherApps: true)
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            if let name = configured {
+                joinNetwork(named: name)
+            } else {
+                // Nothing set yet, so remember what gets picked.
+                offerNetworkChoice(rememberPick: true)
+            }
+        case .alertSecondButtonReturn where configured != nil:
+            offerNetworkChoice(rememberPick: false)
+        default:
+            break
+        }
+    }
+
+    /// Reads the Wi-Fi menu, then lets the user pick from it. The menu read
+    /// blocks, hence the background queue.
+    private func offerNetworkChoice(rememberPick: Bool) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = WiFiMenu.availableNetworks()
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let networks):
+                    guard !networks.isEmpty else {
+                        self.showNetworkFailureAlert(name: nil, error: .entryNotFound(seen: []))
+                        return
+                    }
+                    guard let pick = self.askToPick(from: networks) else { return }
+                    if rememberPick { self.defaults.set(pick, forKey: self.kNetwork) }
+                    self.joinNetwork(named: pick)
+                case .failure(let error):
+                    self.showNetworkFailureAlert(name: nil, error: error)
+                }
+            }
+        }
+    }
+
+    private func askToPick(from networks: [String]) -> String? {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Network"
+        alert.informativeText = "Pick the network to join."
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 26))
+        popup.addItems(withTitles: networks)
+        alert.accessoryView = popup
+        alert.addButton(withTitle: "Switch")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return popup.titleOfSelectedItem
+    }
+
+    /// Prompts for the default network and stores it. Returns the stored name,
+    /// or `nil` when cancelled or left blank.
+    @discardableResult
+    private func askForNetworkName() -> String? {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Network"
+        alert.informativeText = "Name as shown in the Wi-Fi menu."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "e.g. MyAI"
+        field.stringValue = preferredNetwork ?? ""
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        defaults.set(name, forKey: kNetwork)
+        // Driving the Wi-Fi menu needs accessibility access — ask now rather
+        // than letting the first switch fail on it.
+        if !name.isEmpty, !WiFiMenu.isTrusted { WiFiMenu.requestTrust() }
+        return name.isEmpty ? nil : name
+    }
+
+    /// Presses the network's entry in the Wi-Fi menu, off the main thread —
+    /// opening the panel and waiting for its rows takes a moment.
+    ///
+    /// Connecting itself is left to macOS: a sleeping personal hotspot is woken
+    /// first, so the link comes up seconds after the press. The menu bar shows
+    /// the result, which is why no confirmation is polled here.
+    private func joinNetwork(named name: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = WiFiMenu.join(name: name)
+            DispatchQueue.main.async {
+                if case .failure(let error) = result {
+                    self.showNetworkFailureAlert(name: name, error: error)
+                }
+            }
+        }
+    }
+
+    private func showNetworkFailureAlert(name: String?, error: WiFiMenu.MenuError) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = name.map { "Could not join \"\($0)\"" } ?? "Could not read the Wi-Fi menu"
+
+        // The two failures the user can actually fix get an action button.
+        var offersAccessibilitySettings = false
+        var offersRename = false
+
+        switch error {
+        case .accessibilityNotTrusted:
+            offersAccessibilitySettings = true
+            alert.informativeText = """
+            Switching works by pressing the network's entry in the Wi-Fi menu, \
+            which needs accessibility access.
+
+            Allow "SleepModeSwitcher" under Privacy & Security → Accessibility, \
+            then try again.
+            """
+        case .controlCenterNotRunning:
+            alert.informativeText = "Control Center is not running, so the Wi-Fi menu is unavailable."
+        case .wifiMenuNotFound:
+            alert.informativeText = """
+            No Wi-Fi item was found in the menu bar. Enable it under Control \
+            Center settings ("Show in Menu Bar").
+            """
+        case .entryNotFound(let seen):
+            offersRename = name != nil
+            alert.informativeText = seen.isEmpty
+                ? "The Wi-Fi menu listed no networks. Is Wi-Fi switched off?"
+                : """
+                The Wi-Fi menu lists: \(seen.joined(separator: ", ")).
+
+                The name has to match one of these exactly.
+                """
+        case .pressFailed(let message):
+            alert.informativeText = message
+        }
+
+        if offersAccessibilitySettings {
+            alert.addButton(withTitle: "Open Accessibility Settings")
+            alert.addButton(withTitle: "Cancel")
+        } else if offersRename {
+            alert.addButton(withTitle: "Change name …")
+            alert.addButton(withTitle: "Cancel")
+        } else {
+            alert.addButton(withTitle: "OK")
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        if offersAccessibilitySettings {
+            // Registers the app in the list; the pane is where it gets ticked.
+            WiFiMenu.requestTrust()
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                NSWorkspace.shared.open(url)
+            }
+        } else if offersRename, let corrected = askForNetworkName() {
+            joinNetwork(named: corrected)
+        }
     }
 
     // MARK: - Alerts
