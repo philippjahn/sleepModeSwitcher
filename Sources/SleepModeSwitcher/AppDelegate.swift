@@ -3,8 +3,9 @@ import AppKit
 /// Owns the menu-bar item and wires together toggling, the auto-off safety
 /// monitor, the login item, and the right-click menu.
 ///
-/// Icon states (SF Symbols, template-rendered):
-///   moon.fill → sleep allowed (normal)   bolt.fill → sleep disabled (stays awake)
+/// Icon states (SF Symbols):
+///   moon.fill (template) → sleep allowed
+///   bolt.fill (bold, yellow) → sleep disabled (stays awake)
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
@@ -27,7 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
         loadSafetySettings()
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // Square (fixed) length: moon and bolt have different intrinsic widths;
+        // a variable-length item would shift neighboring menu-bar icons on toggle.
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             button.target = self
             button.action = #selector(statusItemClicked)
@@ -42,9 +45,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // If sleep was already disabled (e.g. set manually before launch),
+            // Hard cap: never let a stale, wrong-scale bitmap overflow the item.
+            button.imageScaling = .scaleProportionallyDown
         // begin guarding it immediately.
         if SleepController.isSleepDisabled() {
             safety.start()
+        // Rebuild the icon whenever displays are attached/detached or change
+        // scale, discarding any image reps cached for the old configuration.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screensChanged),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil)
+
         }
     }
 
@@ -80,8 +93,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let disabled = SleepController.isSleepDisabled()
         let symbol = disabled ? "bolt.fill" : "moon.fill"
         let description = disabled ? "Sleep disabled — stays awake" : "Sleep allowed"
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
-        image?.isTemplate = true
+
+        // Same point size for both states so the icon doesn't visually jump.
+        var config = NSImage.SymbolConfiguration(pointSize: 15, weight: disabled ? .bold : .regular)
+        if disabled {
+            config = config.applying(.init(paletteColors: [.systemYellow]))
+        }
+        guard let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: description)?
+            .withSymbolConfiguration(config) else {
+            button.image = nil
+            return
+        }
+
+        // Re-render through a drawing-handler image: the handler runs once per
+        // backing scale, keeping the icon at its point size on mixed-DPI
+        // multi-monitor setups. A plain symbol image would otherwise reuse one
+        // screen's bitmap on another and appear oversized.
+        let image = NSImage(size: symbolImage.size, flipped: false) { rect in
+            symbolImage.draw(in: rect)
+            return true
+        }
+        // The bolt keeps its yellow palette color (non-template) so the active
+        // "stays awake" state stands out; the moon adapts to the menu bar.
+        image.isTemplate = !disabled
+        image.accessibilityDescription = description
         button.image = image
     }
 
@@ -95,6 +130,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
     }
+    @objc private func screensChanged() {
+        refreshIcon()
+    }
+
 
     private func buildMenu() -> NSMenu {
         let menu = NSMenu()
