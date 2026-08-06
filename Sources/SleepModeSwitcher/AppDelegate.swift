@@ -15,12 +15,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // UserDefaults keys (Int; 0 means "off")
     private let kBattery = "batteryThresholdPercent"
     private let kHours = "timeLimitHours"
+    private let kHeat = "heatPolicy"
+    private let kHeatCeiling = "heatCeilingCelsius"
     private let kDidRegisterLogin = "didRegisterLoginItem"
     // Key string kept from the first version so an existing setting survives.
     private let kNetwork = "hotspotSSID"
+    // Written on every auto-off so the menu can say why it happened.
+    private let kLastTripReason = "lastTripReason"
+    private let kLastTripAt = "lastTripAt"
+    private let kLogSensors = "logThermalSensors"
 
     private var currentBattery: Int { defaults.integer(forKey: kBattery) }
     private var currentHours: Int { defaults.integer(forKey: kHours) }
+    private var currentHeat: Int { defaults.integer(forKey: kHeat) }
+    private var currentCeiling: Int { defaults.integer(forKey: kHeatCeiling) }
+
+    /// Heat policies as menu entries. The tag is what gets persisted, so the
+    /// codes stay stable even when labels or the order change.
+    private static let heatPolicies: [(label: String, code: Int, policy: SafetyMonitor.HeatPolicy)] = [
+        ("Off", 0, .off),
+        ("Critical only", 1, .criticalOnly),
+        ("Serious, immediately", 2, .serious(afterMinutes: 0)),
+        ("Serious, after 2 min", 3, .serious(afterMinutes: 2)),
+        ("Serious, after 5 min", 4, .serious(afterMinutes: 5)),
+        ("Serious, after 10 min", 5, .serious(afterMinutes: 10))
+    ]
+
+    private static func heatPolicy(for code: Int) -> SafetyMonitor.HeatPolicy {
+        heatPolicies.first { $0.code == code }?.policy ?? .serious(afterMinutes: 0)
+    }
 
     /// Default network to switch to; `nil` when unset or blank.
     private var preferredNetwork: String? {
@@ -33,10 +56,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        safety = SafetyMonitor(onTripped: { [weak self] in
-            DispatchQueue.main.async { self?.handleSafetyTrip() }
+        safety = SafetyMonitor(onTripped: { [weak self] reason in
+            DispatchQueue.main.async { self?.handleSafetyTrip(reason) }
         })
         loadSafetySettings()
+        if defaults.bool(forKey: kLogSensors) { dumpThermalSensors() }
 
         // Square (fixed) length: moon and bolt have different intrinsic widths;
         // a variable-length item would shift neighboring menu-bar icons on toggle.
@@ -56,6 +80,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification,
+            object: nil)
+
+        // The bolt turns orange under thermal pressure, so heat is visible
+        // before the safety net ever acts on it.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(thermalStateChanged),
+            name: ProcessInfo.thermalStateDidChangeNotification,
             object: nil)
 
         // Register as a login item on first launch (autostart is the default).
@@ -101,8 +133,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if target { offerNetworkSwitch() }
     }
 
-    private func handleSafetyTrip() {
-        SleepController.setSleepDisabled(false)
+    /// Restores sleep and records why, so the menu can explain an auto-off the
+    /// user was not around to see.
+    ///
+    /// A failed `pmset` call leaves the monitor running on purpose, so the next
+    /// check tries again — and nothing is recorded, because no auto-off
+    /// happened. No alert either: it would block this runloop, and there is
+    /// nobody to read it behind a closed lid.
+    private func handleSafetyTrip(_ reason: SafetyMonitor.TripReason) {
+        guard SleepController.setSleepDisabled(false) else { return }
+        safety.stop()
+        defaults.set(reason.rawValue, forKey: kLastTripReason)
+        defaults.set(Date().timeIntervalSince1970, forKey: kLastTripAt)
         refreshIcon()
     }
 
@@ -112,16 +154,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshIcon()
     }
 
+    @objc private func thermalStateChanged() {
+        DispatchQueue.main.async { self.refreshIcon() }
+    }
+
     private func refreshIcon() {
         guard let button = statusItem.button else { return }
         let disabled = SleepController.isSleepDisabled()
+        let hot = SafetyMonitor.isHot(ProcessInfo.processInfo.thermalState)
         let symbol = disabled ? "bolt.fill" : "moon.fill"
-        let description = disabled ? "Sleep disabled — stays awake" : "Sleep allowed"
+        let description: String
+        switch (disabled, hot) {
+        case (true, true): description = "Sleep disabled — running hot"
+        case (true, false): description = "Sleep disabled — stays awake"
+        case (false, _): description = "Sleep allowed"
+        }
 
         // Same point size for both states so the icon doesn't visually jump.
         var config = NSImage.SymbolConfiguration(pointSize: 15, weight: disabled ? .bold : .regular)
         if disabled {
-            config = config.applying(.init(paletteColors: [.systemYellow]))
+            config = config.applying(.init(paletteColors: [hot ? .systemOrange : .systemYellow]))
         }
         guard let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: description)?
             .withSymbolConfiguration(config) else {
@@ -164,6 +216,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
+
+        for line in [temperatureLine(), lastTripLine()].compactMap({ $0 }) {
+            let item = NSMenuItem(title: line, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+
         menu.addItem(.separator())
 
         menu.addItem(submenuItem(
@@ -177,6 +236,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             options: [("Off", 0), ("1 h", 1), ("2 h", 2), ("4 h", 4), ("8 h", 8)],
             selected: currentHours,
             action: #selector(setTimeLimit(_:))))
+
+        menu.addItem(submenuItem(
+            title: "Auto-off on heat",
+            options: Self.heatPolicies.map { ($0.label, $0.code) },
+            selected: currentHeat,
+            action: #selector(setHeatPolicy(_:))))
+
+        // Only offered where a sensor actually answers — the thermal states
+        // above work everywhere, this does not.
+        if ThermalSensor.isAvailable {
+            menu.addItem(submenuItem(
+                title: "Auto-off above temperature",
+                options: [("Off", 0), ("90 °C", 90), ("95 °C", 95), ("100 °C", 100)],
+                selected: currentCeiling,
+                action: #selector(setHeatCeiling(_:))))
+        }
 
         menu.addItem(.separator())
 
@@ -225,6 +300,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return item
     }
 
+    /// "Temperature: 78 °C (serious)". Either half is dropped when it has
+    /// nothing to say — no readable sensor, or a nominal thermal state — and
+    /// the whole line disappears when both are silent.
+    private func temperatureLine() -> String? {
+        let celsius = ThermalSensor.hottestCelsius().map { "\(Int($0.rounded())) °C" }
+        let state = Self.thermalLabel(ProcessInfo.processInfo.thermalState)
+        switch (celsius, state) {
+        case let (value?, label?): return "Temperature: \(value) (\(label))"
+        case let (value?, nil): return "Temperature: \(value)"
+        case let (nil, label?): return "Temperature: \(label)"
+        case (nil, nil): return nil
+        }
+    }
+
+    private static func thermalLabel(_ state: ProcessInfo.ThermalState) -> String? {
+        switch state {
+        case .nominal: return nil
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return nil
+        }
+    }
+
+    /// "Last auto-off: heat — Today, 14:32", so an auto-off that happened
+    /// while the lid was closed is not a mystery afterwards.
+    private func lastTripLine() -> String? {
+        let stamp = defaults.double(forKey: kLastTripAt)
+        guard stamp > 0, let reason = defaults.string(forKey: kLastTripReason) else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        formatter.doesRelativeDateFormatting = true
+        return "Last auto-off: \(reason) — \(formatter.string(from: Date(timeIntervalSince1970: stamp)))"
+    }
+
     // MARK: - Menu actions
 
     @objc private func setBatteryThreshold(_ sender: NSMenuItem) {
@@ -235,6 +346,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func setTimeLimit(_ sender: NSMenuItem) {
         defaults.set(sender.tag, forKey: kHours)
         safety.timeLimitHours = sender.tag == 0 ? nil : Double(sender.tag)
+    }
+
+    @objc private func setHeatPolicy(_ sender: NSMenuItem) {
+        defaults.set(sender.tag, forKey: kHeat)
+        safety.heatPolicy = Self.heatPolicy(for: sender.tag)
+    }
+
+    @objc private func setHeatCeiling(_ sender: NSMenuItem) {
+        defaults.set(sender.tag, forKey: kHeatCeiling)
+        safety.heatCeilingCelsius = sender.tag == 0 ? nil : sender.tag
     }
 
     @objc private func toggleLoginItem() {
@@ -256,11 +377,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Settings
 
     private func loadSafetySettings() {
-        // Defaults on first run: 20 % battery floor, 4 h time limit.
+        // Defaults on first run: 20 % battery floor, 4 h time limit, sleep as
+        // soon as the system reports serious thermal pressure. The absolute
+        // °C ceiling stays off — it rests on a private API, so it is opt-in.
         if defaults.object(forKey: kBattery) == nil { defaults.set(20, forKey: kBattery) }
         if defaults.object(forKey: kHours) == nil { defaults.set(4, forKey: kHours) }
+        if defaults.object(forKey: kHeat) == nil { defaults.set(2, forKey: kHeat) }
+        if defaults.object(forKey: kHeatCeiling) == nil { defaults.set(0, forKey: kHeatCeiling) }
         safety.batteryThreshold = currentBattery == 0 ? nil : currentBattery
         safety.timeLimitHours = currentHours == 0 ? nil : Double(currentHours)
+        safety.heatPolicy = Self.heatPolicy(for: currentHeat)
+        // Read as a plain Int, so a value set with `defaults write` outside the
+        // menu's four choices works too.
+        safety.heatCeilingCelsius = currentCeiling == 0 ? nil : currentCeiling
+    }
+
+    /// Prints every sensor the private interface exposes, so the name
+    /// allowlist in `ThermalSensor` can be checked on an unfamiliar chip
+    /// without a code change. Enable with:
+    /// `defaults write com.philippjahn.SleepModeSwitcher logThermalSensors -bool YES`
+    private func dumpThermalSensors() {
+        let readings = ThermalSensor.allReadings()
+        guard !readings.isEmpty else {
+            fputs("thermal sensors: none readable\n", stderr)
+            return
+        }
+        for reading in readings.sorted(by: { $0.celsius > $1.celsius }) {
+            fputs(String(format: "thermal sensor %@ = %.1f °C\n", reading.name, reading.celsius), stderr)
+        }
     }
 
     // MARK: - Network switching
