@@ -392,12 +392,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         safety.heatCeilingCelsius = currentCeiling == 0 ? nil : currentCeiling
     }
 
-    /// Prints every sensor the private interface exposes, so the name
-    /// allowlist in `ThermalSensor` can be checked on an unfamiliar chip
-    /// without a code change. Enable with:
+    /// Prints every sensor both interfaces expose, so the key selection in
+    /// `SMCSensor` and the name allowlist in `ThermalSensor` can be checked
+    /// on an unfamiliar chip without a code change. Enable with:
     /// `defaults write com.philippjahn.SleepModeSwitcher logThermalSensors -bool YES`
     private func dumpThermalSensors() {
-        let readings = ThermalSensor.allReadings()
+        let readings = SMCSensor.allReadings().map { (name: "SMC \($0.name)", celsius: $0.celsius) }
+            + ThermalSensor.allReadings().map { (name: "HID \($0.name)", celsius: $0.celsius) }
         guard !readings.isEmpty else {
             fputs("thermal sensors: none readable\n", stderr)
             return

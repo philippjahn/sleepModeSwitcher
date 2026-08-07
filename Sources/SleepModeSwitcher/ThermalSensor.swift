@@ -1,10 +1,12 @@
 import Foundation
 
-/// Die temperatures from the IOKit HID sensor interface — the route Stats and
-/// macmon take. It needs neither root nor an entitlement, but it is private
-/// API, so every symbol is resolved through `dlsym` at runtime: a macOS release
-/// that drops one degrades this to "no temperature available" instead of
-/// breaking the build or the launch.
+/// Die temperatures. `SMCSensor` is asked first — on recent Apple silicon
+/// the per-core CPU sensors live only in the SMC — and the IOKit HID sensor
+/// interface here (the route Stats and macmon take) is the fallback where
+/// that yields nothing. The HID route needs neither root nor an entitlement,
+/// but it is private API, so every symbol is resolved through `dlsym` at
+/// runtime: a macOS release that drops one degrades this to "no temperature
+/// available" instead of breaking the build or the launch.
 ///
 /// Nothing safety-critical depends on it. `SafetyMonitor` trips on the public
 /// `ProcessInfo.thermalState`; the °C ceiling is opt-in and its menu is hidden
@@ -26,11 +28,18 @@ enum ThermalSensor {
 
     /// Hottest die sensor in °C, or `nil` when nothing is readable.
     ///
-    /// Reading one sensor costs about a millisecond, so this only touches the
-    /// pre-selected die sensors (14 of 77 services on an M4 Pro) and caches the
-    /// result briefly — a menu build and a monitor check landing together then
-    /// share one sweep.
+    /// The SMC's per-core CPU sensors come first: on M3/M4 the HID interface
+    /// below only exposes the PMU package sensors, which sit 20–30 °C below
+    /// the hottest core under load — cool enough that the °C ceiling could
+    /// never trip. The HID sweep remains for machines where the SMC route
+    /// yields nothing.
+    ///
+    /// Reading one HID sensor costs about a millisecond, so the sweep only
+    /// touches the pre-selected die sensors (14 of 77 services on an M4 Pro)
+    /// and caches the result briefly — a menu build and a monitor check
+    /// landing together then share one sweep.
     static func hottestCelsius() -> Double? {
+        if let celsius = SMCSensor.hottestCPUCelsius() { return celsius }
         if let cached = cachedHottest, Date().timeIntervalSince(cached.at) < cacheLifetime {
             return cached.celsius
         }
