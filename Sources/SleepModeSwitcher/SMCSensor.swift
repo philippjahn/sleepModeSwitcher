@@ -28,7 +28,11 @@ enum SMCSensor {
         }
         if let celsius = hottest() { return celsius }
         // A connection can go stale (SMC reset, ungraceful wake); every read
-        // then fails. Drop everything and try once more before giving up.
+        // then fails. Drop everything and try once more before giving up —
+        // but only when there were keys to read: a machine without matching
+        // keys is a permanent condition, and re-enumerating thousands of SMC
+        // keys on every sample would not change it.
+        guard cachedCPUKeys?.isEmpty == false else { return nil }
         invalidate()
         return hottest()
     }
@@ -54,27 +58,84 @@ enum SMCSensor {
         return celsius
     }
 
-    /// The CPU core keys, resolved once. Enumerating all keys means a few
-    /// thousand calls, so the result is kept for the lifetime of the process
-    /// — the hardware does not change while running.
+    /// The CPU core keys, resolved once — the hardware does not change while
+    /// running. The curated per-generation list comes first; only when none
+    /// of its keys answer (an unknown future chip) does the prefix sweep run.
     private static func cpuKeys(_ connection: io_connect_t) -> [UInt32] {
         if let cachedCPUKeys { return cachedCPUKeys }
-        guard let keys = allKeys(connection) else { return [] }
 
-        let cpu = keys.filter { key in
+        let curated = curatedCoreKeys().map(fourCC).filter { key in
+            keyInfo(key, connection).map { name(of: $0.dataType) == "flt " } ?? false
+        }
+        if !curated.isEmpty {
+            cachedCPUKeys = curated
+            return curated
+        }
+
+        // Unknown generation (or renamed keys): sweep everything under the
+        // CPU prefixes. This overshoots by ~10 °C where hotspot sensors
+        // exist, but beats having no reading at all.
+        guard let keys = allKeys(connection) else { return [] }
+        let swept = keys.filter { key in
             guard cpuPrefixes.contains(where: name(of: key).hasPrefix) else { return false }
             // Apple silicon core sensors are all `flt`; the type check keeps
             // unrelated same-prefix keys on other machines (Intel is `sp78`
             // territory) from masquerading as a CPU core.
             return keyInfo(key, connection).map { name(of: $0.dataType) == "flt " } ?? false
         }
-        cachedCPUKeys = cpu
-        return cpu
+        cachedCPUKeys = swept
+        return swept
     }
 
-    /// CPU core sensors in Apple silicon's SMC naming: `Tp…` performance
-    /// cores, `Te…` efficiency cores. GPU (`Tg…`), skin, NAND and the rest
-    /// stay out — the ceiling and the status line are about the CPU.
+    /// The per-core sensor keys the Stats app has mapped out, per chip
+    /// generation. The SMC exposes further sensors under the same prefixes —
+    /// per-core hotspots and cluster maxima that run ~10 °C above the core
+    /// reading — and sweeping those in showed values consistently hotter than
+    /// what iStat and Stats display. Key names also collide across
+    /// generations (M5 core keys are M4 hotspot keys), so the selection must
+    /// be per-generation rather than one union.
+    private static func curatedCoreKeys() -> [String] {
+        switch generation() {
+        case "M1":
+            return ["Tp01", "Tp05", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0X", "Tp0b",
+                    "Tp09", "Tp0T"]
+        case "M2":
+            return ["Tp01", "Tp05", "Tp09", "Tp0D", "Tp0X", "Tp0b", "Tp0f", "Tp0j",
+                    "Tp1h", "Tp1l", "Tp1p", "Tp1t"]
+        case "M3":
+            return ["Tf04", "Tf09", "Tf0A", "Tf0B", "Tf0D", "Tf0E",
+                    "Tf44", "Tf49", "Tf4A", "Tf4B", "Tf4D", "Tf4E",
+                    "Te05", "Te0L", "Te0P", "Te0S"]
+        case "M4":
+            return ["Tp01", "Tp05", "Tp09", "Tp0D", "Tp0V", "Tp0Y", "Tp0b", "Tp0e",
+                    "Te05", "Te09", "Te0H", "Te0S"]
+        case "M5":
+            return ["Tp00", "Tp04", "Tp08", "Tp0C", "Tp0G", "Tp0K",
+                    "Tp0O", "Tp0R", "Tp0U", "Tp0X", "Tp0a", "Tp0d",
+                    "Tp0g", "Tp0j", "Tp0m", "Tp0p", "Tp0u", "Tp0y"]
+        default:
+            return []
+        }
+    }
+
+    /// "M4" from a brand string like "Apple M4 Pro", or `nil` off Apple
+    /// silicon — Intel brand strings carry no such token.
+    private static func generation() -> String? {
+        var size = 0
+        guard sysctlbyname("machdep.cpu.brand_string", nil, &size, nil, 0) == 0, size > 0
+        else { return nil }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("machdep.cpu.brand_string", &buffer, &size, nil, 0) == 0
+        else { return nil }
+        return String(cString: buffer)
+            .split(separator: " " as Character)
+            .first { $0.first == "M" && $0.dropFirst().allSatisfy(\.isNumber) && $0.count > 1 }
+            .map(String.init)
+    }
+
+    /// Prefix-sweep fallback only: `Tp…` performance cores, `Te…` efficiency
+    /// cores. GPU (`Tg…`), skin, NAND and the rest stay out — the ceiling and
+    /// the status line are about the CPU.
     private static let cpuPrefixes = ["Tp", "Te"]
 
     /// Power-gated cores read 0 (some report small constants like -4 or 5),
