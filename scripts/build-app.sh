@@ -8,14 +8,24 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/.build/release"
 APP="$ROOT/$APP_NAME.app"
 
+ICON="$ROOT/Resources/AppIcon.icns"
+
 echo "▸ Building (release) …"
 cd "$ROOT"
 swift build -c release
+
+# The icon is checked in; re-render it only when the drawing changed, since
+# compiling the script costs a few seconds.
+if [ ! -f "$ICON" ] || [ "$ROOT/scripts/make-icon.swift" -nt "$ICON" ]; then
+    echo "▸ Rendering app icon …"
+    swift "$ROOT/scripts/make-icon.swift" "$ICON"
+fi
 
 echo "▸ Assembling $APP_NAME.app …"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP/Contents/MacOS/$APP_NAME"
+cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -30,6 +40,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>$BUNDLE_ID</string>
     <key>CFBundleExecutable</key>
     <string>$APP_NAME</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -65,6 +77,10 @@ else
     echo "▸ Code signing (ad-hoc — Accessibility approval will not survive rebuilds) …"
     codesign --force --deep --sign - "$APP"
 fi
+
+# Finder caches icons per bundle; bumping the mtime makes it pick up a changed
+# one instead of showing the previous (or the generic) icon.
+touch "$APP"
 
 echo "✓ Done: $APP"
 echo "  Tip: Move the app to /Applications for more stable login-item autostart."
