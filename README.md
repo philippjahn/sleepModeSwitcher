@@ -151,17 +151,23 @@ silicon — `pmset -g therm` fails there with `0xe00002bc`.
 
 ### Temperature readout
 
-When die sensors are readable, the menu shows the hottest one (*"Temperature:
-78 °C (serious)"*) and offers an extra **Auto-off above temperature** limit —
-Off *(default)* / 90 / 95 / 100 °C, tripping after two consecutive samples so a
-spike cannot.
+When die sensors are readable, the menu shows the hottest CPU core
+(*"Temperature: 78 °C (serious)"*) and offers an extra **Auto-off above
+temperature** limit — Off *(default)* / 90 / 95 / 100 °C, tripping after two
+consecutive samples so a spike cannot.
 
-This half rests on the private IOKit HID sensor interface (the route Stats and
-macmon take: no root, no entitlement, but no guarantees either). Every symbol is
-resolved at runtime, so if a future macOS drops one, the temperature line and
-the °C limit simply disappear — `thermalState` keeps the safety net running on
-its own. Sensor names differ per chip (an M4 Pro reports `PMU tdie1`…`tdie14`);
-to check what a given machine exposes:
+The reading comes from the AppleSMC user client, using the per-core keys the
+Stats app has mapped out per chip generation (`Tp…`/`Te…`/`Tf…`) — the same
+sensors iStat and Stats label "CPU". Two deliberate exclusions: the SMC's
+hotspot and cluster-max keys under the same prefixes run ~10 °C above the core
+reading, and on recent chips (M3/M4) the IOKit HID interface only exposes the
+PMU package sensors, which sit 20–30 °C *below* the hottest core. On an
+unknown future chip generation the curated list is empty and a prefix sweep
+fills in; where the SMC yields nothing at all, the HID route (the one Stats
+and macmon take) remains as the last fallback, every symbol resolved at
+runtime. If a future macOS closes both doors, the temperature line and the °C
+limit simply disappear — `thermalState` keeps the safety net running on its
+own. To check what a given machine exposes over both interfaces:
 
 ```bash
 defaults write com.philippjahn.SleepModeSwitcher logThermalSensors -bool YES
@@ -240,7 +246,8 @@ Sources/SleepModeSwitcher/
   SleepController.swift pmset control + state reading
   WiFiMenu.swift        joins a network by pressing its Wi-Fi menu entry
   SafetyMonitor.swift   auto-off safety (heat + battery threshold + timeout)
-  ThermalSensor.swift   die temperature via the IOKit HID sensor interface
+  SMCSensor.swift       per-core CPU temperature via the AppleSMC user client
+  ThermalSensor.swift   die temperature; SMC first, IOKit HID as fallback
   LoginItem.swift       login item registration via SMAppService
 scripts/
   build-app.sh          build release binary + assemble .app bundle
