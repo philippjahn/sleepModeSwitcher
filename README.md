@@ -153,8 +153,11 @@ silicon — `pmset -g therm` fails there with `0xe00002bc`.
 
 When die sensors are readable, the menu shows the hottest CPU core
 (*"Temperature: 78 °C (serious)"*) and offers an extra **Auto-off above
-temperature** limit — Off *(default)* / 90 / 95 / 100 °C, tripping after two
-consecutive samples so a spike cannot.
+temperature** limit — Off *(default)* / 90 / 95 / 100 / 105 / 110 °C, tripping
+after two consecutive samples so a spike cannot. The reading is the hottest
+CPU core, which under sustained all-core load sits at 90–110 °C by design —
+pick a ceiling from the upper end unless tripping during long compiles is the
+point.
 
 The reading comes from the AppleSMC user client, using the per-core keys the
 Stats app has mapped out per chip generation (`Tp…`/`Te…`/`Tf…`) — the same

@@ -248,7 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ThermalSensor.isAvailable {
             menu.addItem(submenuItem(
                 title: "Auto-off above temperature",
-                options: [("Off", 0), ("90 °C", 90), ("95 °C", 95), ("100 °C", 100)],
+                options: [("Off", 0), ("90 °C", 90), ("95 °C", 95), ("100 °C", 100),
+                          ("105 °C", 105), ("110 °C", 110)],
                 selected: currentCeiling,
                 action: #selector(setHeatCeiling(_:))))
         }
@@ -388,7 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         safety.timeLimitHours = currentHours == 0 ? nil : Double(currentHours)
         safety.heatPolicy = Self.heatPolicy(for: currentHeat)
         // Read as a plain Int, so a value set with `defaults write` outside the
-        // menu's four choices works too.
+        // menu's choices works too.
         safety.heatCeilingCelsius = currentCeiling == 0 ? nil : currentCeiling
     }
 
