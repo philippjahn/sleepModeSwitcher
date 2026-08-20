@@ -96,11 +96,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defaults.set(true, forKey: kDidRegisterLogin)
         }
 
-        // Switching means pressing an entry in the Wi-Fi menu — ask for
-        // accessibility access on launch so the grant is in place by the first
-        // toggle instead of failing it.
-        if preferredNetwork != nil, !WiFiMenu.isTrusted {
-            WiFiMenu.requestTrust()
+        // Both grants the network feature rests on are asked for on launch,
+        // so they are in place by the first toggle instead of failing it:
+        // accessibility (switching presses an entry in the Wi-Fi menu) and
+        // Location Services (reading the current SSID, to skip the question
+        // when already on the stored network).
+        if preferredNetwork != nil {
+            if !WiFiMenu.isTrusted { WiFiMenu.requestTrust() }
+            WiFiStatus.requestPermissionIfNeeded()
         }
 
         // If sleep was already disabled (e.g. set manually before launch),
@@ -130,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refreshIcon()
         // Staying awake is nearly always work away from the desk — offer the
         // network right after the switch, never when going back to sleep.
-        if target { offerNetworkSwitch() }
+        if target { offerNetworkSwitchIfNeeded() }
     }
 
     /// Restores sleep and records why, so the menu can explain an auto-off the
@@ -411,7 +414,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Network switching
 
-    /// Asked on every switch to "sleep disabled": staying awake usually means
+    /// Only asks when the stored network is not already the connected one —
+    /// being on it already leaves nothing to ask about. The read goes through
+    /// CoreWLAN, so nothing shows on screen; it can stall for a moment on the
+    /// airportd IPC, hence the background queue.
+    ///
+    /// An unknown SSID (nothing stored, no Location Services permission, or
+    /// Wi-Fi off) falls back to asking: there is nothing to compare against.
+    private func offerNetworkSwitchIfNeeded() {
+        guard let preferred = preferredNetwork else {
+            offerNetworkSwitch()
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let connected = WiFiStatus.currentSSID()
+            DispatchQueue.main.async {
+                if let connected, connected.caseInsensitiveCompare(preferred) == .orderedSame {
+                    return
+                }
+                self.offerNetworkSwitch()
+            }
+        }
+    }
+
+    /// Asked on a switch to "sleep disabled": staying awake usually means
     /// working away from the desk, where the uplink changes too.
     ///
     /// Three answers, because the stored network is a default and not a rule:
@@ -507,9 +533,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return nil }
         let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         defaults.set(name, forKey: kNetwork)
-        // Driving the Wi-Fi menu needs accessibility access — ask now rather
-        // than letting the first switch fail on it.
-        if !name.isEmpty, !WiFiMenu.isTrusted { WiFiMenu.requestTrust() }
+        // Driving the Wi-Fi menu needs accessibility access, and skipping the
+        // question when already connected needs Location Services — ask now
+        // rather than letting the first switch fail on it.
+        if !name.isEmpty {
+            if !WiFiMenu.isTrusted { WiFiMenu.requestTrust() }
+            WiFiStatus.requestPermissionIfNeeded()
+        }
         return name.isEmpty ? nil : name
     }
 

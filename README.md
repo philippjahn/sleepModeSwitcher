@@ -11,7 +11,8 @@ so local work can continue **with the lid closed**.
 - **Left click** on the icon toggles the state immediately (no password prompt).
 - **Right click** opens a menu with status, auto-off settings, the default
   network, login item, and quit.
-- Switching to *sleep disabled* asks whether to change Wi-Fi network — see
+- Switching to *sleep disabled* asks whether to change Wi-Fi network — skipped
+  silently when the default network is already connected. See
   [Network switching](#network-switching).
 - Automatically registers as a login item on first launch.
 
@@ -179,11 +180,31 @@ defaults write com.philippjahn.SleepModeSwitcher logThermalSensors -bool YES
 
 ## Network switching
 
-Disabling sleep usually means working away from the desk, so every switch to
+Disabling sleep usually means working away from the desk, so a switch to
 **sleep disabled** asks about the network. Three answers: **Switch** joins the
 network stored as default, **Other …** offers a list of everything the Wi-Fi
 menu currently shows, and **Not now** leaves the connection untouched. Nothing
-is asked when switching back to sleep-allowed.
+is asked when switching back to sleep-allowed — and nothing is asked when the
+stored network is already the connected one.
+
+That already-connected check reads the SSID via CoreWLAN, which brings a
+second permission with it: macOS treats the network name as **location data**
+(SSIDs map to coordinates in Wi-Fi positioning databases, so apps were using
+them to track people) and hands it only to apps allowed under **Privacy &
+Security → Location Services**. The app asks once when a default network is
+configured; no coordinates are ever read, so the location arrow in the menu
+bar never lights up for it. Denying the permission costs nothing but the
+network question showing up on every switch.
+
+The permission is not a detour but, as of macOS 26, the only door left —
+verified source by source: `CWInterface.ssid` returns `nil`, `ipconfig
+getsummary` and `system_profiler SPAirPortDataType` print `<redacted>`, the
+SC dynamic store blanks `SSID_STR`, the IOKit registry reports
+`"IO80211SSID" = "<SSID Redacted>"`, `networksetup -getairportnetwork` claims
+*"not associated"* while connected, the DHCP lease files went root-only, and
+even `sudo wdutil info` redacts. The Wi-Fi menu itself still shows the name,
+but reading it there via accessibility means visibly opening the panel on
+every toggle.
 
 The default network is set via the right-click menu — **Network: …** — or on
 the first switch, when nothing is stored yet. Picking under *Other …* is a
@@ -248,6 +269,7 @@ Sources/SleepModeSwitcher/
   AppDelegate.swift     status icon, click handling, menu
   SleepController.swift pmset control + state reading
   WiFiMenu.swift        joins a network by pressing its Wi-Fi menu entry
+  WiFiStatus.swift      current SSID via CoreWLAN (needs Location Services)
   SafetyMonitor.swift   auto-off safety (heat + battery threshold + timeout)
   SMCSensor.swift       per-core CPU temperature via the AppleSMC user client
   ThermalSensor.swift   die temperature; SMC first, IOKit HID as fallback

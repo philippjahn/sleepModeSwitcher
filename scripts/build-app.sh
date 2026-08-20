@@ -52,6 +52,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <string>13.0</string>
     <key>LSUIElement</key>
     <true/>
+    <!-- macOS treats the Wi-Fi network name as location data. The permission
+         is only used to skip the network question when already connected to
+         the stored network; no coordinates are ever read. -->
+    <key>NSLocationUsageDescription</key>
+    <string>macOS only reveals the current Wi-Fi network's name to apps with location access. It is used solely to skip the network question when you are already on your default network.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>macOS only reveals the current Wi-Fi network's name to apps with location access. It is used solely to skip the network question when you are already on your default network.</string>
 </dict>
 </plist>
 PLIST
